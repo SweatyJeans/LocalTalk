@@ -1,19 +1,45 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-#include <ifaddrs.h>
-#include <netinet/in.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <net/if.h>
+#if defined(_WIN32)
+    #ifndef _WIN32_WINT
+        #define _WIN32_WINT 0x0600
+    #endif
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #include <iphlpapi.h>
+    #pragma comment(lib, "ws2_32.lib")
+    #pragma comment(lib, "iphlpapi.lib")
+#else
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <errno.h>
+    #include <ifaddrs.h>
+    #include <netinet/in.h>
+    #include <sys/types.h>
+    #include <unistd.h>
+    #include <netdb.h>
+    #include <arpa/inet.h>
+    #include <sys/socket.h>
+    #include <sys/select.h>
+    #include <net/if.h>
+#endif
 
 #define BUFFER_SIZE 1024
 #define PORT "8080"
+
+#if !defined(_WIN32)
+    #define CLOSESOCKET(sd) close(sd)
+    #define ISVALIDSOCKET(sd) ((sd) >= 0)
+    #define SOCKETISOPEN(sd) ((sd) != -1)
+    #define SOCKET int
+    #define GETSOCKETERRNO() (errno)
+    #define SHUTDOWNSOCKET(sd) shutdown((sd), SHUT_RDWR)
+#else
+    #define CLOSESOCKET(sd) closesocket(sd)
+    #define ISVALIDSOCKET(sd) ((sd) != INVALID_SOCKET)
+    #define GETSOCKETERRNO() (WSAGetLastError())
+    #define SOCKETISOPEN(sd) ((sd) != INVALID_SOCKET)
+    #define SHUTDOWNSOCKET(sd) shutdown((sd), SD_BOTH)
+#endif
 
 int main(int argc, char** argv) {
     fputc('\n', stdout);
@@ -21,8 +47,29 @@ int main(int argc, char** argv) {
         fprintf(stderr, "error: needs -s (send) or -l (listen) as arguments.\n");
         return 1;
     }
+
+    #if defined(_WIN32)
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa)) {
+        fprintf(stderr, "error > Failed to initialize.\n");
+        return 1;
+    }
+    #endif
+
     char buffer[BUFFER_SIZE];
-    int socketListen = -1, socketClient = -1, socketRemote = -1;
+    int result;
+    SOCKET socketListen, socketClient, socketRemote;
+
+    #if defined(_WIN32)
+        socketListen = INVALID_SOCKET;
+        socketClient = INVALID_SOCKET;
+        socketRemote = INVALID_SOCKET;
+    #else
+        socketListen = -1;
+        socketClient = -1;
+        socketRemote = -1;
+    #endif
+
     if (strncmp(argv[1], "-s", 2) == 0) {
         //send
         char ipBuffer[INET6_ADDRSTRLEN];
@@ -36,14 +83,23 @@ int main(int argc, char** argv) {
         memset(&hints, 0, sizeof(hints));
         hints.ai_socktype = SOCK_STREAM;
 
-        if (getaddrinfo(ipBuffer, PORT, &hints, &remoteAddress)) {
-            fprintf(stderr, "error > Address (%s) cannot be resolved (Code: %d)\n", ipBuffer, errno);
+        result = getaddrinfo(ipBuffer, PORT, &hints, &remoteAddress);
+        if (result != 0) {
+            #ifdef _WIN32
+            fprintf(stderr, "error > Address (%s) cannot be resolved (Code: %d - %s)\n", ipBuffer, result, gai_strerrorA(result));
+            #else
+            fprintf(stderr, "error > Address (%s) cannot be resolved (Code: %d - %s)\n", ipBuffer, result, gai_strerror(result));
+            #endif
             goto forceEnd;
         }
 
         socketRemote = socket(remoteAddress->ai_family, remoteAddress->ai_socktype, remoteAddress->ai_protocol);
-        if (socketRemote < 0) {
+        if (!ISVALIDSOCKET(socketRemote)) {
+            #ifdef _WIN32
+            fprintf(stderr, "error > Creating socket failed (Code: %d)\n", WSAGetLastError());
+            #else
             fprintf(stderr, "error > Creating socket failed (Code: %d)\n", errno);
+            #endif
             freeaddrinfo(remoteAddress);
             goto forceEnd;
         }
@@ -53,18 +109,24 @@ int main(int argc, char** argv) {
         getnameinfo(remoteAddress->ai_addr, remoteAddress->ai_addrlen, remoteAddrBuffer, sizeof(remoteAddrBuffer), remoteServiceBuffer, sizeof(remoteServiceBuffer), NI_NUMERICHOST);
         printf("STATUS:\nConnecting to %s on port %s\n", remoteAddrBuffer, remoteServiceBuffer);
 
-        if (connect(socketRemote, remoteAddress->ai_addr, remoteAddress->ai_addrlen)) {
+        result = connect(socketRemote, remoteAddress->ai_addr, remoteAddress->ai_addrlen);
+        if (result != 0) {
+            #ifdef _WIN32
+            fprintf(stderr, "error > Connection attempt to %s failed (Code: %d)\n", remoteAddrBuffer, WSAGetLastError());
+            #else
             fprintf(stderr, "error > Connection attempt to %s failed (Code: %d)\n", remoteAddrBuffer, errno);
+            #endif
             freeaddrinfo(remoteAddress);
             goto forceEnd;
         }
+
         freeaddrinfo(remoteAddress);
 
         memset(buffer, 0, BUFFER_SIZE);
         int tmp;
         printf("STATUS > Waiting for connection authorization...\n");
         if ((tmp = recv(socketRemote, buffer, BUFFER_SIZE, 0)) == -1) {
-            close(socketRemote);
+            CLOSESOCKET(socketRemote);
             goto forceEnd;
         }
 
@@ -80,12 +142,16 @@ int main(int argc, char** argv) {
             fputc('\n', stdout);
             
             if (strncmp(buffer, "$end", 4) == 0) {
-                close(socketRemote);
+                CLOSESOCKET(socketRemote);
                 break;
             }
             int bytesSent = send(socketRemote, buffer, strlen(buffer), 0);
             if (bytesSent <= 0) {
+                #ifdef _WIN32
+                fprintf(stderr, "error > sending data failed (Code: %d)\n", WSAGetLastError());
+                #else
                 fprintf(stderr, "error > sending data failed (Code: %d)\n", errno);
+                #endif
                 continue;
             }
         }
@@ -99,31 +165,101 @@ int main(int argc, char** argv) {
         hints.ai_family = AF_UNSPEC;
         hints.ai_flags = AI_PASSIVE;
 
-        if (getaddrinfo(0, PORT, &hints, &bindAddress) != 0) {
-            fprintf(stderr, "error: Can't switch to listening mode (Code: %d)\n", errno);
+        result = getaddrinfo(0, PORT, &hints, &bindAddress);
+        if (result != 0) {
+            #ifdef _WIN32
+            fprintf(stderr, "error: Can't switch to listening mode (Code: %d - %s)\n", result, gai_strerrorA(result));
+            #else
+            fprintf(stderr, "error: Can't switch to listening mode (Code: %d - %s)\n", result, gai_strerror(result));
+            #endif
             freeaddrinfo(bindAddress);
             return 1;
+
         }
 
         socketListen = socket(bindAddress->ai_family, bindAddress->ai_socktype, bindAddress->ai_protocol);
-        if (socketListen <= 0) {
-            fprintf(stderr, "error: Can't create socket (Code: %d)\n", errno);
+        if (!ISVALIDSOCKET(socketListen)) {
+            #ifdef _WIN32
+            fprintf(stderr, "error > Creating socket failed (Code: %d)\n", WSAGetLastError());
+            #else
+            fprintf(stderr, "error > Creating socket failed (Code: %d)\n", errno);
+            #endif
             freeaddrinfo(bindAddress);
             goto forceEnd;
         }
 
         if (bind(socketListen, bindAddress->ai_addr, bindAddress->ai_addrlen)) {
+            #ifdef _WIN32
+            fprintf(stderr, "error: Can't bind address (Code: %d)\n", WSAGetLastError());
+            #else
             fprintf(stderr, "error: Can't bind address (Code: %d)\n", errno);
+            #endif
             freeaddrinfo(bindAddress);
             goto forceEnd;
         }
 
         if (listen(socketListen, 3) < 0) {
+            #ifdef _WIN32
+            fprintf(stderr, "error: Can't activate listening mode (Code: %d)\n", WSAGetLastError());
+            #else
             fprintf(stderr, "error: Can't activate listening mode (Code: %d)\n", errno);
+            #endif
+            freeaddrinfo(bindAddress);
             goto forceEnd;
         }
 
         freeaddrinfo(bindAddress);
+
+        #if defined(_WIN32)
+        //Windows: Use GetAdaptersAddresses
+        ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+        ULONG bufferSize = 15000;
+        PIP_ADAPTER_ADDRESSES adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
+        if (!adapterAddresses) {
+            fprintf(stderr, "error > Memory allocation for adapter list failed.\n");
+            goto forceEnd;
+        }
+
+        if (GetAdaptersAddresses(AF_UNSPEC, flags, NULL, adapterAddresses, &bufferSize) == NO_ERROR) {
+            PIP_ADAPTER_ADDRESSES adapter = adapterAddresses;
+            while (adapter) {
+                if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) {
+                    adapter = adapter->Next;
+                    continue;
+                }
+
+                PIP_ADAPTER_UNICAST_ADDRESS address = adapter->FirstUnicastAddress;
+                while (address) {
+                    SOCKADDR* sa = address->Address.lpSockaddr;
+                    char ipStr[INET6_ADDRSTRLEN];
+
+                    if (sa->sa_family == AF_INET) {
+                        struct sockaddr_in* ipv4 = (struct sockaddr_in*)sa;
+                        inet_ntop(AF_INET, &(ipv4->sin_addr), ipStr, sizeof(ipStr));
+                    } 
+                    else if (sa->sa_family == AF_INET6) {
+                        struct sockaddr_in6* ipv6 = (struct sockaddr_in6*)sa;
+                        inet_ntop(AF_INET6, &(ipv6->sin6_addr), ipStr, sizeof(ipStr));
+                    } 
+                    else {
+                        address = address->Next;
+                        continue;
+                    }
+
+                    printf("\nSTATUS:\n\nFirst usable IP to connect to > %s\n", ipStr);
+                    free(adapterAddresses);
+                    return;
+                address = address->Next;
+                }
+                adapter = adapter->Next;
+            }
+        } 
+        else {
+            fprintf(stderr, "error > No usable IP address found.\n");
+        }
+        free(adapterAddresses);
+
+        #else
 
         char ipstr[INET6_ADDRSTRLEN];
         struct ifaddrs* ifaddr, *ifa;
@@ -180,14 +316,20 @@ int main(int argc, char** argv) {
 
         freeifaddrs(ifaddr);
 
+        #endif
+
         retryAccept:
         printf("\nWaiting for incoming connections...\n");
         struct sockaddr_storage clientAddress;
         socklen_t clientAddressLen = sizeof(clientAddress);
 
         socketClient = accept(socketListen, (struct sockaddr*)&clientAddress, &clientAddressLen);
-        if (socketClient < 0) {
+        if (!ISVALIDSOCKET(socketClient)) {
+            #ifdef _WIN32
+            fprintf(stderr, "Can't accept incoming connection (Code: %d)\n", WSAGetLastError());
+            #else
             fprintf(stderr, "Can't accept incoming connection (Code: %d)\n", errno);
+            #endif
             goto retryAccept;
         }
 
@@ -207,11 +349,13 @@ int main(int argc, char** argv) {
         inet_ntop(clientAddress.ss_family, addrPtr, ipstr, sizeof(ipstr));
 
         printf("Connection attempt from: %s\nAccept connection?(y/n) > ", ipstr);
-        char answer = fgetc(stdin);
+        char answer[10];
+        fgets(answer, sizeof(answer), stdin);
+        //char answer = fgetc(stdin);
         
-        if (answer != 'y' && answer != 'Y') {
+        if (answer[0] != 'y' && answer[0] != 'Y') {
             printf("STATUS > Connection was rejected.\n");
-            close(socketClient);
+            CLOSESOCKET(socketClient);
             goto forceEnd;
         }
 
@@ -239,9 +383,15 @@ int main(int argc, char** argv) {
 
     //end label
     forceEnd:
-    if (socketListen != -1) close(socketListen);
-    if (socketClient != -1) close(socketClient);
-    if (socketRemote != -1) close(socketRemote);
+    
+    if (SOCKETISOPEN(socketListen)) SHUTDOWNSOCKET(socketListen); CLOSESOCKET(socketListen);
+    if (SOCKETISOPEN(socketClient)) SHUTDOWNSOCKET(socketClient); CLOSESOCKET(socketClient);
+    if (SOCKETISOPEN(socketRemote)) SHUTDOWNSOCKET(socketRemote); CLOSESOCKET(socketRemote);
+
+    #if defined(_WIN32)
+    WSACleanup();
+    #endif
+
     printf("STATUS > Program execution successfully completed\n");
     return 0;
 }
