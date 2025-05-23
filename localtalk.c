@@ -250,7 +250,7 @@ int main(int argc, char** argv) {
 
                     printf("\nSTATUS:\n\nFirst usable IP to connect to > %s\n", ipStr);
                     free(adapterAddresses);
-                    return;
+                    goto retryAccept;
                 address = address->Next;
                 }
                 adapter = adapter->Next;
