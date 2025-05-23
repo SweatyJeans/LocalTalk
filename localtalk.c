@@ -1,4 +1,5 @@
 #if defined(_WIN32)
+    #define _CRT_SECURE_NO_WARNINGS
     #ifndef _WIN32_WINT
         #define _WIN32_WINT 0x0600
     #endif
@@ -8,9 +9,6 @@
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "iphlpapi.lib")
 #else
-    #include <stdio.h>
-    #include <stdlib.h>
-    #include <string.h>
     #include <errno.h>
     #include <ifaddrs.h>
     #include <netinet/in.h>
@@ -22,6 +20,10 @@
     #include <sys/select.h>
     #include <net/if.h>
 #endif
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define BUFFER_SIZE 1024
 #define PORT "8080"
@@ -261,7 +263,7 @@ int main(int argc, char** argv) {
 
         #else
 
-        char ipstr[INET6_ADDRSTRLEN];
+        char ipStr[INET6_ADDRSTRLEN];
         struct ifaddrs* ifaddr, *ifa;
 
         if (getifaddrs(&ifaddr) == -1) {
@@ -299,10 +301,10 @@ int main(int argc, char** argv) {
             }
             else continue;
 
-            if (getnameinfo(ifa->ifa_addr, (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6), ipstr, sizeof(ipstr), NULL, 0, NI_NUMERICHOST)) continue;
+            if (getnameinfo(ifa->ifa_addr, (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6), ipStr, sizeof(ipStr), NULL, 0, NI_NUMERICHOST)) continue;
 
-            if (strcmp(ipstr, "127.0.0.1") != 0 && strcmp(ipstr, "::1") != 0) {
-                printf("\nSTATUS:\n\nFirst usable IP to connect to > %s\n", ipstr);
+            if (strcmp(ipStr, "127.0.0.1") != 0 && strcmp(ipStr, "::1") != 0) {
+                printf("\nSTATUS:\n\nFirst usable IP to connect to > %s\n", ipStr);
                 found = 1;
                 break;
             }
@@ -345,10 +347,10 @@ int main(int argc, char** argv) {
             goto retryAccept;
         }
 
-        memset(ipstr, 0, sizeof(ipstr));
-        inet_ntop(clientAddress.ss_family, addrPtr, ipstr, sizeof(ipstr));
+        memset(ipStr, 0, sizeof(ipStr));
+        inet_ntop(clientAddress.ss_family, addrPtr, ipStr, sizeof(ipStr));
 
-        printf("Connection attempt from: %s\nAccept connection?(y/n) > ", ipstr);
+        printf("Connection attempt from: %s\nAccept connection?(y/n) > ", ipStr);
         char answer[10];
         fgets(answer, sizeof(answer), stdin);
         //char answer = fgetc(stdin);
@@ -359,7 +361,7 @@ int main(int argc, char** argv) {
             goto forceEnd;
         }
 
-        printf("STATUS > Connection from %s accepted.\n", ipstr);
+        printf("STATUS > Connection from %s accepted.\n", ipStr);
         memset(buffer, 0, BUFFER_SIZE);
         strcpy(buffer, "Connection attempt was accepted");
         send(socketClient, buffer, strlen(buffer), 0);
@@ -367,7 +369,7 @@ int main(int argc, char** argv) {
         while (1) {
             ssize_t bytesReceived = recv(socketClient, buffer, BUFFER_SIZE-1, 0);
             if (bytesReceived <= 0) {
-                printf("STATUS > Connection from %s was terminated\n", ipstr);
+                printf("STATUS > Connection from %s was terminated\n", ipStr);
                 goto forceEnd;
             }
 
