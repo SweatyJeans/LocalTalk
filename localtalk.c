@@ -214,6 +214,7 @@ int main(int argc, char** argv) {
 
         #if defined(_WIN32)
         //Windows: Use GetAdaptersAddresses
+        char ipStr[INET6_ADDRSTRLEN];
         ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
         ULONG bufferSize = 15000;
         PIP_ADAPTER_ADDRESSES adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
@@ -233,7 +234,6 @@ int main(int argc, char** argv) {
                 PIP_ADAPTER_UNICAST_ADDRESS address = adapter->FirstUnicastAddress;
                 while (address) {
                     SOCKADDR* sa = address->Address.lpSockaddr;
-                    char ipStr[INET6_ADDRSTRLEN];
 
                     if (sa->sa_family == AF_INET) {
                         struct sockaddr_in* ipv4 = (struct sockaddr_in*)sa;
@@ -367,7 +367,7 @@ int main(int argc, char** argv) {
         send(socketClient, buffer, strlen(buffer), 0);
 
         while (1) {
-            ssize_t bytesReceived = recv(socketClient, buffer, BUFFER_SIZE-1, 0);
+            int bytesReceived = recv(socketClient, buffer, BUFFER_SIZE-1, 0);
             if (bytesReceived <= 0) {
                 printf("STATUS > Connection from %s was terminated\n", ipStr);
                 goto forceEnd;
