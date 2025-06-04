@@ -168,6 +168,7 @@ int main(int argc, char** argv) {
             while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, fd)) > 0) {
                 send(socketRemote, buffer, bytesRead, SENDFLAGS);
             }
+            fclose(fd);
         }
         else if (answer[0] == '2') {
             //Message gets send
@@ -199,6 +200,7 @@ int main(int argc, char** argv) {
         }
         else {
             //Invalid answer
+            fprintf(stderr, "error > Invalid input \"%c\" use \"1\" oder \"2\"\n", answer[0]);
         }
     }
     else if (strncmp(argv[1], "-l", 2) == 0) {
