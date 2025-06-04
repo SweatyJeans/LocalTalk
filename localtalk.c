@@ -1,3 +1,4 @@
+#include <stddef.h>
 #if defined(_WIN32)
     #define _CRT_SECURE_NO_WARNINGS
     #ifndef _WIN32_WINT
@@ -35,18 +36,20 @@
     #define SOCKET int
     #define GETSOCKETERRNO() (errno)
     #define SHUTDOWNSOCKET(sd) shutdown((sd), SHUT_RDWR)
+    #define SENDFLAGS MSG_NOSIGNAL
 #else
     #define CLOSESOCKET(sd) closesocket(sd)
     #define ISVALIDSOCKET(sd) ((sd) != INVALID_SOCKET)
     #define GETSOCKETERRNO() (WSAGetLastError())
     #define SOCKETISOPEN(sd) ((sd) != INVALID_SOCKET)
     #define SHUTDOWNSOCKET(sd) shutdown((sd), SD_BOTH)
+    #define SENDFLAGS 0
 #endif
 
 int main(int argc, char** argv) {
     fputc('\n', stdout);
     if (argc < 2) {
-        fprintf(stderr, "error: needs -s (send) or -l (listen) as arguments.\n");
+        fprintf(stderr, "error > needs -s (send) or -l (listen) as arguments.\n");
         return 1;
     }
 
@@ -75,7 +78,7 @@ int main(int argc, char** argv) {
     if (strncmp(argv[1], "-s", 2) == 0) {
         //send
         char ipBuffer[INET6_ADDRSTRLEN];
-        printf("\nEnter the IP you want to connect to (IPv4 and IPv6) > ");
+        printf("\nSTATUS > Enter the IP you want to connect to (IPv4 and IPv6) > ");
         fgets(ipBuffer, sizeof(ipBuffer), stdin);
         ipBuffer[strcspn(ipBuffer, "\n")] = '\0';
         fputc('\n', stdout);
@@ -124,38 +127,79 @@ int main(int argc, char** argv) {
 
         freeaddrinfo(remoteAddress);
 
-        memset(buffer, 0, BUFFER_SIZE);
+        //memset(buffer, 0, BUFFER_SIZE);
         int tmp;
         printf("STATUS > Waiting for connection authorization...\n");
-        if ((tmp = recv(socketRemote, buffer, BUFFER_SIZE, 0)) == -1) {
-            CLOSESOCKET(socketRemote);
-            goto forceEnd;
-        }
+        if ((tmp = recv(socketRemote, buffer, BUFFER_SIZE, 0)) == -1) goto forceEnd;
 
         buffer[tmp] = '\0';
         printf("\n%s\n", buffer);
-        
 
-        while (1) {
-            memset(buffer, 0, BUFFER_SIZE);
-            printf("STATUS > to TERMINATE the connection enter \"$end\"\nData to send > ");
-            fflush(stdout);
-            fgets(buffer, BUFFER_SIZE, stdin);
+        char answer[10];
+        printf("STATUS > What do you want to send?\n1. File\n2. Message\n> ");
+        fgets(answer, sizeof(answer), stdin);
+        fputc('\n', stdout);
+        
+        if (answer[0] == '1') {
+            //FILE gets send
+            printf("Enter file name > ");
+            char filename[100];
+            fgets(filename, sizeof(filename), stdin);
             fputc('\n', stdout);
+
+            filename[strcspn(filename, "\n")] = '\0';
+
+            FILE* fd = fopen(filename, "rb");
+            if (fd == NULL) {
+                fprintf(stderr, "STATUS > Can't open file \"%s\"\n", filename);
+                goto forceEnd;
+            }
+
+            fseek(fd, 0, SEEK_END);
+            long filesize = ftell(fd);
+            fseek(fd, 0, SEEK_SET);
+
+            char header[256];
+            snprintf(header, sizeof(header), "TYPE:FILE\nFILENAME:%s\nSIZE:%ld\n\n", filename, filesize);
+            send(socketRemote, header, strlen(header), SENDFLAGS);
+
+            //memset(buffer, 0, BUFFER_SIZE);
+            size_t bytesRead;
             
-            if (strncmp(buffer, "$end", 4) == 0) {
-                CLOSESOCKET(socketRemote);
-                break;
+            while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, fd)) > 0) {
+                send(socketRemote, buffer, bytesRead, SENDFLAGS);
             }
-            int bytesSent = send(socketRemote, buffer, strlen(buffer), 0);
-            if (bytesSent <= 0) {
-                #ifdef _WIN32
-                fprintf(stderr, "error > sending data failed (Code: %d)\n", WSAGetLastError());
-                #else
-                fprintf(stderr, "error > sending data failed (Code: %d)\n", errno);
-                #endif
-                continue;
+        }
+        else if (answer[0] == '2') {
+            //Message gets send
+            char header[256];
+            snprintf(header, sizeof(header), "TYPE:MESSAGE\n\n");
+            send(socketRemote, header, sizeof(header), SENDFLAGS);
+
+            while (1) {
+                memset(buffer, 0, BUFFER_SIZE);
+                printf("STATUS > to TERMINATE the connection enter \"$end\"\nData to send > ");
+                fflush(stdout);
+                fgets(buffer, BUFFER_SIZE, stdin);
+                fputc('\n', stdout);
+                
+                if (strncmp(buffer, "$end", 4) == 0) {
+                    CLOSESOCKET(socketRemote);
+                    break;
+                }
+                int bytesSent = send(socketRemote, buffer, strlen(buffer), SENDFLAGS);
+                if (bytesSent <= 0) {
+                    #ifdef _WIN32
+                    fprintf(stderr, "error > sending data failed (Code: %d)\n", WSAGetLastError());
+                    #else
+                    fprintf(stderr, "error > sending data failed (Code: %d)\n", errno);
+                    #endif
+                    continue;
+                }
             }
+        }
+        else {
+            //Invalid answer
         }
     }
     else if (strncmp(argv[1], "-l", 2) == 0) {
@@ -170,9 +214,9 @@ int main(int argc, char** argv) {
         result = getaddrinfo(0, PORT, &hints, &bindAddress);
         if (result != 0) {
             #ifdef _WIN32
-            fprintf(stderr, "error: Can't switch to listening mode (Code: %d - %s)\n", result, gai_strerrorA(result));
+            fprintf(stderr, "error > Can't switch to listening mode (Code: %d - %s)\n", result, gai_strerrorA(result));
             #else
-            fprintf(stderr, "error: Can't switch to listening mode (Code: %d - %s)\n", result, gai_strerror(result));
+            fprintf(stderr, "error > Can't switch to listening mode (Code: %d - %s)\n", result, gai_strerror(result));
             #endif
             freeaddrinfo(bindAddress);
             return 1;
@@ -192,9 +236,9 @@ int main(int argc, char** argv) {
 
         if (bind(socketListen, bindAddress->ai_addr, bindAddress->ai_addrlen)) {
             #ifdef _WIN32
-            fprintf(stderr, "error: Can't bind address (Code: %d)\n", WSAGetLastError());
+            fprintf(stderr, "error > Can't bind address (Code: %d)\n", WSAGetLastError());
             #else
-            fprintf(stderr, "error: Can't bind address (Code: %d)\n", errno);
+            fprintf(stderr, "error > Can't bind address (Code: %d)\n", errno);
             #endif
             freeaddrinfo(bindAddress);
             goto forceEnd;
@@ -202,9 +246,9 @@ int main(int argc, char** argv) {
 
         if (listen(socketListen, 3) < 0) {
             #ifdef _WIN32
-            fprintf(stderr, "error: Can't activate listening mode (Code: %d)\n", WSAGetLastError());
+            fprintf(stderr, "error > Can't activate listening mode (Code: %d)\n", WSAGetLastError());
             #else
-            fprintf(stderr, "error: Can't activate listening mode (Code: %d)\n", errno);
+            fprintf(stderr, "error > Can't activate listening mode (Code: %d)\n", errno);
             #endif
             freeaddrinfo(bindAddress);
             goto forceEnd;
@@ -267,7 +311,7 @@ int main(int argc, char** argv) {
         struct ifaddrs* ifaddr, *ifa;
 
         if (getifaddrs(&ifaddr) == -1) {
-            fprintf(stderr, "error: Can't get local IP addresses (Code: %d)\n", errno);
+            fprintf(stderr, "error > Can't get local IP addresses (Code: %d)\n", errno);
             freeifaddrs(ifaddr);
             goto forceEnd;
         }
@@ -311,7 +355,7 @@ int main(int argc, char** argv) {
         }
 
         if (!found) {
-            fprintf(stderr, "error: no usable IP address found.\n");
+            fprintf(stderr, "error > no usable IP address found.\n");
             freeifaddrs(ifaddr);
             goto forceEnd;
         }
@@ -321,16 +365,16 @@ int main(int argc, char** argv) {
         #endif
 
         retryAccept:
-        printf("\nWaiting for incoming connections...\n");
+        printf("\nSTATUS > Waiting for incoming connections...\n");
         struct sockaddr_storage clientAddress;
         socklen_t clientAddressLen = sizeof(clientAddress);
 
         socketClient = accept(socketListen, (struct sockaddr*)&clientAddress, &clientAddressLen);
         if (!ISVALIDSOCKET(socketClient)) {
             #ifdef _WIN32
-            fprintf(stderr, "Can't accept incoming connection (Code: %d)\n", WSAGetLastError());
+            fprintf(stderr, "error > Can't accept incoming connection (Code: %d)\n", WSAGetLastError());
             #else
-            fprintf(stderr, "Can't accept incoming connection (Code: %d)\n", errno);
+            fprintf(stderr, "error > Can't accept incoming connection (Code: %d)\n", errno);
             #endif
             goto retryAccept;
         }
@@ -343,43 +387,86 @@ int main(int argc, char** argv) {
             addrPtr = &((struct sockaddr_in6*)&clientAddress)->sin6_addr;
         }
         else {
-            fprintf(stderr, "error: Incoming connection is not IPv4 or IPv6.\n");
+            fprintf(stderr, "error > Incoming connection is not IPv4 or IPv6.\n");
             goto retryAccept;
         }
 
         memset(ipStr, 0, sizeof(ipStr));
         inet_ntop(clientAddress.ss_family, addrPtr, ipStr, sizeof(ipStr));
 
-        printf("Connection attempt from: %s\nAccept connection?(y/n) > ", ipStr);
+        printf("STATUS > Connection attempt from: %s\nAccept connection?(y/n) > ", ipStr);
         char answer[10];
         fgets(answer, sizeof(answer), stdin);
         //char answer = fgetc(stdin);
         
         if (answer[0] != 'y' && answer[0] != 'Y') {
             printf("STATUS > Connection was rejected.\n");
-            CLOSESOCKET(socketClient);
+            //memset(buffer, 0, BUFFER_SIZE);
+            strcpy(buffer, "Connection attempt declined\n");
+            send(socketClient, buffer, strlen(buffer), SENDFLAGS);
+            //CLOSESOCKET(socketClient);
             goto forceEnd;
         }
 
         printf("STATUS > Connection from %s accepted.\n", ipStr);
-        memset(buffer, 0, BUFFER_SIZE);
-        strcpy(buffer, "Connection attempt was accepted");
-        send(socketClient, buffer, strlen(buffer), 0);
+        //memset(buffer, 0, BUFFER_SIZE);
+        strcpy(buffer, "STATUS > Connection attempt was accepted\n");
+        send(socketClient, buffer, strlen(buffer), SENDFLAGS);
 
-        while (1) {
-            int bytesReceived = recv(socketClient, buffer, BUFFER_SIZE-1, 0);
-            if (bytesReceived <= 0) {
-                printf("STATUS > Connection from %s was terminated\n", ipStr);
-                goto forceEnd;
+        char header[512] = {0};
+        int bytesReceived = 0;
+        char chunk;
+
+        //receive header
+        while (strstr(header, "\n\n") == NULL && bytesReceived < sizeof(header) - 1) {
+            recv(socketClient, &chunk, 1, 0);
+            header[bytesReceived++] = chunk;
+        }
+        header[bytesReceived] = '\0';
+
+        //parse header
+        if (strcmp(header, "TYPE:MESSAGE\n\n") == 0) {
+            while (1) {
+                bytesReceived = recv(socketClient, buffer, BUFFER_SIZE-1, 0);
+                if (bytesReceived <= 0) {
+                    printf("STATUS > Connection from %s was terminated\n", ipStr);
+                    goto forceEnd;
+                }
+    
+                buffer[bytesReceived] = '\0';
+    
+                printf("\nReceived message > %s", buffer);
+            }
+        }
+        else {
+            char filename[128];
+            long filesize = 0;
+            sscanf(header, "TYPE:FILE\nFILENAME:%127[^\n]\nSIZE:%ld", filename, &filesize);
+
+            FILE* fd = fopen(filename, "wb");
+            if (fd == NULL) {
+                fprintf(stderr, "STATUS > Can't create file \"%s\"\n", filename);
             }
 
-            buffer[bytesReceived] = '\0';
+            long total = 0;
+            while (total < filesize) {
+                bytesReceived = recv(socketClient, buffer, BUFFER_SIZE, 0);
+                if (bytesReceived <= 0) {
+                    printf("STATUS > Connection from %s was terminated\n", ipStr);
+                    fclose(fd);
+                    goto forceEnd;
+                }
+                
 
-            printf("\nReceived data > %s", buffer);
+                fwrite(buffer, 1, bytesReceived, fd);
+                total += bytesReceived;
+            }
+            fclose(fd);
+            printf("STATUS > The file \"%s\" was successfully received.\n", filename);
         }
     }
     else {
-        fprintf(stderr, "error: undefined parameter <%s>\n", argv[1]);
+        fprintf(stderr, "error > undefined parameter <%s>\n", argv[1]);
         return 1;
     }
 
